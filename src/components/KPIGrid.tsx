@@ -10,6 +10,8 @@ interface KPIGridProps {
   onRejectedClick?: () => void;
   onAcceptedClick?: () => void;
   onWipClick?: () => void;
+  onMovedClick?: () => void;
+  onCsClick?: () => void;
   filteredData: DashboardRow[];
   mapping: ColumnMapping;
 }
@@ -95,7 +97,7 @@ const TiltCard = memo(({
   );
 });
 
-const KPIGrid: React.FC<KPIGridProps> = ({ stats, loading, onRejectedClick, onAcceptedClick, onWipClick, filteredData, mapping }) => {
+const KPIGrid: React.FC<KPIGridProps> = ({ stats, loading, onRejectedClick, onAcceptedClick, onWipClick, onMovedClick, onCsClick, filteredData, mapping }) => {
   const trendData = useMemo(() => {
     if (!filteredData || filteredData.length === 0) return [];
     
@@ -133,8 +135,8 @@ const KPIGrid: React.FC<KPIGridProps> = ({ stats, loading, onRejectedClick, onAc
     { label: 'ACCEPTED', value: stats.accepted, icon: CheckCircle, color: 'green', suffix: '', isClickable: true, onClick: onAcceptedClick, trendKey: 'accepted' },
     { label: 'REJECTED', value: stats.rejected, icon: XCircle, color: 'rose', suffix: '', isClickable: true, onClick: onRejectedClick, trendKey: 'rejected' },
     { label: 'WIP INVENTORY', value: stats.wip, icon: Clock, color: 'amber', suffix: '', isClickable: true, onClick: onWipClick, trendKey: 'accepted' },
-    { label: 'MOVED TO INVENTORY', value: stats.movedToInventory, icon: Package, color: 'purple', suffix: '', trendKey: 'accepted' },
-    { label: 'CS REJECTION', value: stats.csRejection, icon: Ban, color: 'orange', suffix: '', trendKey: 'rejected' },
+    { label: 'MOVED TO INVENTORY', value: stats.movedToInventory, icon: Package, color: 'purple', suffix: '', isClickable: true, onClick: onMovedClick, trendKey: 'accepted' },
+    { label: 'CS REJECTION', value: stats.csRejection, icon: Ban, color: 'orange', suffix: '', isClickable: true, onClick: onCsClick, trendKey: 'rejected' },
     { label: 'OVERALL YIELD', value: stats.yield, icon: Percent, color: 'cyan', suffix: '%', trendKey: 'yield' },
   ];
 
@@ -152,7 +154,7 @@ const KPIGrid: React.FC<KPIGridProps> = ({ stats, loading, onRejectedClick, onAc
   };
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7 gap-3 mb-8 w-full perspective-1000">
+    <div className="grid grid-cols-7 gap-3 mb-8 w-full perspective-1000">
       {cards.map((card, idx) => {
         const colors = getColorClasses(card.color);
         const isYieldLow = card.label === 'OVERALL YIELD' && stats.yield < 75;

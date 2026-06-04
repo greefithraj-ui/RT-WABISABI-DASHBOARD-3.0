@@ -1,7 +1,7 @@
 
 import React, { useMemo, useEffect, useState, memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, AlertTriangle, Package, Info, ChevronRight, ArrowLeft, Hash } from 'lucide-react';
+import { X, AlertTriangle, Package, Info, ChevronRight, ArrowLeft, Hash, Search, List, Filter } from 'lucide-react';
 import { DashboardRow, ColumnMapping } from '../types';
 
 interface RejectionDrilldownModalProps {
@@ -18,6 +18,9 @@ const RejectionDrilldownModal: React.FC<RejectionDrilldownModalProps> = ({
   mapping 
 }) => {
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
+  const [showSerials, setShowSerials] = useState(false);
+  const [serialSearch, setSerialSearch] = useState('');
+  const [serialSkuFilter, setSerialSkuFilter] = useState('');
 
   // Helper to format date string (DD-MM-YYYY or DD/MM/YYYY) to DD MMM YYYY
   const formatModalDate = (dateStr: string) => {
@@ -78,6 +81,31 @@ const RejectionDrilldownModal: React.FC<RejectionDrilldownModalProps> = ({
       .sort((a, b) => b.count - a.count);
   }, [rejectedRows, selectedReason, mapping]);
 
+  // View 3: All rejected serials with search and SKU filter
+  const uniqueRejectedSkus = useMemo(() => {
+    const set = new Set<string>();
+    rejectedRows.forEach(r => {
+      const sku = String(r[mapping.sku] || '').trim();
+      if (sku) set.add(sku);
+    });
+    return Array.from(set).sort();
+  }, [rejectedRows, mapping]);
+
+  const filteredSerials = useMemo(() => {
+    let result = rejectedRows;
+    if (serialSkuFilter) {
+      result = result.filter(r => String(r[mapping.sku] || '').trim() === serialSkuFilter);
+    }
+    if (serialSearch) {
+      const term = serialSearch.toLowerCase();
+      result = result.filter(r => {
+        const uid = String(r[mapping.uid] || '').toLowerCase();
+        return uid.includes(term);
+      });
+    }
+    return result;
+  }, [rejectedRows, serialSearch, serialSkuFilter, mapping]);
+
   // Handle Escape key
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -122,22 +150,108 @@ const RejectionDrilldownModal: React.FC<RejectionDrilldownModalProps> = ({
                 <div>
                   <h2 className="text-xl font-black text-white uppercase tracking-tight">Rejection Drill-down</h2>
                   <p className="text-[10px] font-bold text-[#ef4444] uppercase tracking-[0.3em] mono">
-                    {selectedReason ? `Reason: ${selectedReason}` : 'Analysis by Reason'}
+                    {showSerials ? 'All Rejected Serials' : selectedReason ? `Reason: ${selectedReason}` : 'Analysis by Reason'}
                   </p>
                 </div>
               </div>
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-white/5 rounded-xl transition-colors text-[#9ca3af] hover:text-white"
-              >
-                <X className="w-6 h-6" />
-              </button>
+              <div className="flex items-center gap-2">
+                {!showSerials && (
+                  <button 
+                    onClick={() => setShowSerials(true)}
+                    className="p-2 hover:bg-white/5 rounded-xl transition-colors text-[#9ca3af] hover:text-[#ef4444]"
+                    title="View Rejected Serials"
+                  >
+                    <List className="w-5 h-5" />
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="p-2 hover:bg-white/5 rounded-xl transition-colors text-[#9ca3af] hover:text-white"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
             </div>
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
               <AnimatePresence mode="wait">
-                {!selectedReason ? (
+                {showSerials ? (
+                  <motion.div
+                    key="serials-list"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    className="space-y-4"
+                  >
+                    <button 
+                      onClick={() => { setShowSerials(false); setSerialSearch(''); setSerialSkuFilter(''); }}
+                      className="flex items-center gap-2 text-[#9ca3af] hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest mb-4"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      Back to Reason View
+                    </button>
+
+                    <div className="flex items-center gap-3">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9ca3af]" />
+                        <input
+                          type="text"
+                          placeholder="Search by UID..."
+                          className="w-full pl-10 pr-4 py-2.5 bg-[#0f1117] border border-white/5 rounded-xl text-sm text-white focus:ring-2 focus:ring-[#ef4444]/50 outline-none transition-all placeholder:text-[#9ca3af]/50 mono"
+                          value={serialSearch}
+                          onChange={(e) => setSerialSearch(e.target.value)}
+                        />
+                      </div>
+                      <div className="relative">
+                        <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9ca3af] pointer-events-none" />
+                        <select
+                          value={serialSkuFilter}
+                          onChange={(e) => setSerialSkuFilter(e.target.value)}
+                          className="pl-10 pr-8 py-2.5 bg-[#0f1117] border border-white/5 rounded-xl text-sm text-white focus:ring-2 focus:ring-[#ef4444]/50 outline-none transition-all appearance-none mono cursor-pointer min-w-[160px]"
+                        >
+                          <option value="">All SKUs</option>
+                          {uniqueRejectedSkus.map(sku => (
+                            <option key={sku} value={sku}>{sku}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-2xl border border-white/5 bg-[#0f1117]/30">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-white/[0.02] border-b border-white/5">
+                            <th className="px-4 py-3 text-[10px] font-black text-[#9ca3af] uppercase tracking-widest">#</th>
+                            <th className="px-4 py-3 text-[10px] font-black text-[#9ca3af] uppercase tracking-widest">UID</th>
+                            <th className="px-4 py-3 text-[10px] font-black text-[#9ca3af] uppercase tracking-widest">SKU</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {filteredSerials.length > 0 ? (
+                            filteredSerials.map((r, idx) => (
+                              <tr key={idx} className="hover:bg-white/[0.03] transition-all">
+                                <td className="px-4 py-3 text-[10px] font-bold text-[#9ca3af] mono">{idx + 1}</td>
+                                <td className="px-4 py-3">
+                                  <span className="text-sm font-black text-white mono">{String(r[mapping.uid] || '').trim() || '-'}</span>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="text-xs font-bold text-[#9ca3af] mono">{String(r[mapping.sku] || '').trim() || '-'}</span>
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={3} className="px-4 py-16 text-center text-[#9ca3af]/40 italic uppercase text-[10px] font-black tracking-[0.3em]">
+                                No matching serials found
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </motion.div>
+                ) : !selectedReason ? (
                   <motion.div
                     key="reason-view"
                     initial={{ opacity: 0, x: -20 }}
@@ -225,9 +339,16 @@ const RejectionDrilldownModal: React.FC<RejectionDrilldownModalProps> = ({
 
             {/* Footer */}
             <div className="p-6 bg-white/5 border-t border-white/5 flex justify-between items-center">
-              <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mono">
-                Total Rejections: <span className="text-[#ef4444] ml-1">{rejectedRows.length}</span>
-              </p>
+              <div className="flex items-center gap-4">
+                <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mono">
+                  Total Rejections: <span className="text-[#ef4444] ml-1">{rejectedRows.length}</span>
+                </p>
+                {showSerials && filteredSerials.length !== rejectedRows.length && (
+                  <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mono border-l border-white/10 pl-4">
+                    Filtered: <span className="text-white">{filteredSerials.length}</span>
+                  </p>
+                )}
+              </div>
               <button
                 onClick={onClose}
                 className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl border border-white/10 transition-all"

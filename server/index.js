@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import authRoutes from './routes/auth.js';
 import dataRoutes from './routes/data.js';
+import { seedDatabase } from './seed.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,4 +28,5 @@ process.on('unhandledRejection', (reason) => {
 
 app.listen(PORT, () => {
   console.log(`Dashboard server running on http://localhost:${PORT}`);
+  seedDatabase().catch(err => console.error('Seed failed:', err.message));
 });

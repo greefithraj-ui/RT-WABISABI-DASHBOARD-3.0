@@ -25,6 +25,7 @@ export interface ColumnMapping {
   csDate: string;
   csRejection: string;
   csBatch: string;
+  csReason: string;
 }
 
 export interface DashboardRow {
@@ -47,6 +48,7 @@ export interface KPIStats {
   yield: number;
   movedToInventory: number;
   csRejection: number;
+  wipSerials: string[];
 }
 
 export interface RemainingQtyItem {
