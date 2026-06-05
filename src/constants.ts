@@ -14,13 +14,16 @@ export const DEFAULT_MAPPING: ColumnMapping = {
   inventoryDate: 'Inventory Date',
   inventoryBatch: 'INVENTORY BATCH',
   csDate: 'CS DATE',
-  csRejection: 'CS REJECTION',
-  csBatch: 'CS BATCH'
+  csRejection: 'CS REJECTION UID',
+  csBatch: 'CS BATCH',
+  csReason: 'CS REJECTION'
 };
+
+export const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1kId06QCUh6YhxeiX8QuPiimBr02ADwX8KPRp6FLxIcg/edit?gid=575402539#gid=575402539';
 
 export const INITIAL_CONFIG: SheetConfig = {
   url: '',
-  sheetName: 'Sheet1',
+  sheetName: 'RT CONVERSION',
   range: 'A1:Z1000',
   mapping: { ...DEFAULT_MAPPING },
   dataSource: 'sheet',

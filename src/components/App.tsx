@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
-import { Menu, AlertCircle, RefreshCw, Database, Copy, Check, Layout, Server, KeyRound, Eye, EyeOff, Loader, X } from 'lucide-react';
+import { Menu, AlertCircle, RefreshCw, Database, Copy, Check, Layout, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { INITIAL_CONFIG, DEFAULT_MAPPING } from '../constants';
 import { SheetConfig, DashboardRow, KPIStats, SKUDetail } from '../types';
 import { fetchSheetData, parseDate } from '../services/sheetService';
@@ -9,6 +9,7 @@ import FilterSection from './FilterSection';
 import SKUDetailsSection from './SKUDetailsSection';
 import SKUCountCharts from './SKUCountCharts';
 import WipDrilldownModal from './WipDrilldownModal';
+import SerialListModal from './SerialListModal';
 import RejectionDetailsSection from './RejectionDetailsSection';
 import RejectionDrilldownModal from './RejectionDrilldownModal';
 import AcceptedDrilldownModal from './AcceptedDrilldownModal';
@@ -23,6 +24,7 @@ const MemoizedSKUDetailsSection = memo(SKUDetailsSection);
 const MemoizedSKUCountCharts = memo(SKUCountCharts);
 const MemoizedRejectionDetailsSection = memo(RejectionDetailsSection);
 const MemoizedWipDrilldownModal = memo(WipDrilldownModal);
+const MemoizedSerialListModal = memo(SerialListModal);
 const MemoizedRejectionDrilldownModal = memo(RejectionDrilldownModal);
 const MemoizedAcceptedDrilldownModal = memo(AcceptedDrilldownModal);
 
@@ -70,7 +72,8 @@ const App: React.FC = () => {
           return {
             ...INITIAL_CONFIG,
             ...parsed,
-            mapping: { ...INITIAL_CONFIG.mapping, ...(parsed.mapping || {}) }
+            mapping: { ...INITIAL_CONFIG.mapping, ...(parsed.mapping || {}) },
+            url: parsed.url || INITIAL_CONFIG.url,
           };
         }
       } catch (e) {
@@ -116,14 +119,13 @@ const App: React.FC = () => {
   const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'syncing' | null; message: string | null }>({ type: null, message: null });
   const [showDbAuthModal, setShowDbAuthModal] = useState(false);
   const [dbAuthLoading, setDbAuthLoading] = useState(false);
-  const [showSettingsAuthModal, setShowSettingsAuthModal] = useState(false);
-  const [settingsPassword, setSettingsPassword] = useState('');
-  const [showSettingsPassword, setShowSettingsPassword] = useState(false);
-  const [settingsAuthLoading, setSettingsAuthLoading] = useState(false);
-  const [settingsAuthError, setSettingsAuthError] = useState<string | null>(null);
-  const [isSettingsUnlocked, setIsSettingsUnlocked] = useState(() => {
-    return sessionStorage.getItem('qc_dashboard_settings_unlocked') === 'true';
+  const [isAppAuthenticated, setIsAppAuthenticated] = useState(() => {
+    return sessionStorage.getItem('qc_dashboard_authenticated') === 'true';
   });
+  const [showAppAuth, setShowAppAuth] = useState(false);
+  const [appAuthPassword, setAppAuthPassword] = useState('');
+  const [showAppAuthPassword, setShowAppAuthPassword] = useState(false);
+  const [appAuthError, setAppAuthError] = useState<string | null>(null);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const latestDataRef = useRef<DashboardRow[] | null>(null);
   const latestHeadersRef = useRef<string[] | null>(null);
@@ -181,6 +183,8 @@ const App: React.FC = () => {
   const [isRejectionModalOpen, setIsRejectionModalOpen] = useState(false);
   const [isAcceptedModalOpen, setIsAcceptedModalOpen] = useState(false);
   const [isWipModalOpen, setIsWipModalOpen] = useState(false);
+  const [isMovedModalOpen, setIsMovedModalOpen] = useState(false);
+  const [isCsModalOpen, setIsCsModalOpen] = useState(false);
 
   const handleSetSelectedBatches = useCallback((batches: string[]) => {
     syncLatestData();
@@ -196,6 +200,75 @@ const App: React.FC = () => {
     syncLatestData();
     setUidSearch(search);
   }, [syncLatestData]);
+
+  // Robust column detection with priority on SKU
+  const findHeaderMatch = useCallback((availableHeaders: string[], searchTerms: string[]): string | undefined => {
+    if (!availableHeaders.length) return undefined;
+    
+    const lowerHeaders = availableHeaders.map(h => h.trim().toLowerCase());
+    
+    for (const term of searchTerms) {
+      const idx = lowerHeaders.indexOf(term.toLowerCase());
+      if (idx !== -1) return availableHeaders[idx];
+    }
+
+    const contains = availableHeaders.find(h => 
+      searchTerms.some(term => h.toLowerCase().includes(term.toLowerCase()))
+    );
+    if (contains) return contains;
+
+    return availableHeaders.find(h => {
+      const normalized = h.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return searchTerms.some(term => {
+        const termNorm = term.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return normalized.includes(termNorm) || termNorm.includes(normalized);
+      });
+    });
+  }, []);
+
+  const autoDetectMapping = useCallback((availableHeaders: string[]) => {
+    const mapping = { ...(config.mapping || DEFAULT_MAPPING) };
+    
+    const aliases = {
+      sku: ['sku', 'item', 'part', 'article', 'model', 'product', 'code'],
+      batchNo: ['batch', 'lot', 'serial', 'batch no', 'batch number', 'batch id', 'lot no', 'lot id'],
+      ringStatus: ['status', 'result', 'outcome', 'quality'],
+      uid: ['uid', 'id', 'barcode', 'serial'],
+      inward: ['inward', 'qty', 'count', 'total'],
+      reason: ['reason', 'rejection', 'defect', 'cause', 'fault'],
+      movedToInventory: ['moved to inventory', 'inventory', 'moved'],
+      inventoryDate: ['inventory date', 'moved date', 'date moved'],
+      inventoryBatch: ['inventory batch', 'batch moved', 'batch inventory'],
+      csDate: ['cs date'],
+      csRejection: ['cs rejection uid', 'cs rejection'],
+      csBatch: ['cs batch'],
+      csReason: ['cs reason', 'cs rejection'],
+    };
+
+    // 1. Explicitly look for "DATE" column first (case-insensitive)
+    const dateHeader = availableHeaders.find(h => h.trim().toUpperCase() === 'DATE');
+    if (dateHeader) {
+      mapping.date = dateHeader;
+    } else {
+      // Fallback only if "DATE" is not found, using a very restricted set of aliases
+      const fallbackDate = findHeaderMatch(availableHeaders, ['date', 'timestamp', 'day']);
+      if (fallbackDate) mapping.date = fallbackDate;
+    }
+
+    (Object.entries(aliases) as [keyof typeof aliases, string[]][]).forEach(([key, terms]) => {
+      const detected = findHeaderMatch(availableHeaders, terms);
+      if (detected) {
+        (mapping as any)[key] = detected;
+      } else {
+        const currentVal = mapping[key as keyof typeof mapping];
+        if (!currentVal || !availableHeaders.includes(currentVal)) {
+          (mapping as any)[key] = '';
+        }
+      }
+    });
+
+    return mapping;
+  }, [config.mapping, findHeaderMatch]);
 
   const handleSheetSwitch = useCallback((sheetName: string) => {
     if (config.sheetName === sheetName) return;
@@ -225,6 +298,12 @@ const App: React.FC = () => {
       setHeaders(cachedSheet.headers);
       setLastSyncTime(cachedSheet.lastSyncTime);
       setError(null);
+      setSelectedBatches([]);
+      const newMapping = autoDetectMapping(cachedSheet.headers);
+      const newConfig = { ...config, sheetName, mapping: newMapping };
+      setConfig(newConfig);
+      safeLocalStorageSet('qc_dashboard_config', JSON.stringify(newConfig));
+      return;
     }
 
     setSelectedBatches([]);
@@ -232,7 +311,7 @@ const App: React.FC = () => {
     const newConfig = { ...config, sheetName };
     setConfig(newConfig);
     safeLocalStorageSet('qc_dashboard_config', JSON.stringify(newConfig));
-  }, [config, safeLocalStorageSet]);
+  }, [config, safeLocalStorageSet, autoDetectMapping]);
 
   const handleConfigUpdate = useCallback((newConfig: SheetConfig) => {
     syncLatestData();
@@ -241,32 +320,8 @@ const App: React.FC = () => {
   }, [syncLatestData, safeLocalStorageSet]);
 
   const requestSettingsOpen = useCallback(() => {
-    if (isSettingsUnlocked) {
-      setIsSettingsOpen(true);
-      return;
-    }
-    setSettingsAuthError(null);
-    setSettingsPassword('');
-    setShowSettingsAuthModal(true);
-  }, [isSettingsUnlocked]);
-
-  const handleSettingsAuth = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSettingsAuthError(null);
-    setSettingsAuthLoading(true);
-    try {
-      await authenticate(settingsPassword);
-      sessionStorage.setItem('qc_dashboard_settings_unlocked', 'true');
-      setIsSettingsUnlocked(true);
-      setShowSettingsAuthModal(false);
-      setIsSettingsOpen(true);
-      setSettingsPassword('');
-    } catch (err: any) {
-      setSettingsAuthError(err.message || 'Invalid password');
-    } finally {
-      setSettingsAuthLoading(false);
-    }
-  }, [settingsPassword]);
+    setIsSettingsOpen(true);
+  }, []);
 
   // Use a second ref for copy toast timer
   const copyToastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -326,74 +381,6 @@ const App: React.FC = () => {
   }, [flushPersist]);
 
   const lastRawData = useRef<Record<string, string>>({});
-
-  // Robust column detection with priority on SKU
-  const findHeaderMatch = useCallback((availableHeaders: string[], searchTerms: string[]): string | undefined => {
-    if (!availableHeaders.length) return undefined;
-    
-    const lowerHeaders = availableHeaders.map(h => h.trim().toLowerCase());
-    
-    for (const term of searchTerms) {
-      const idx = lowerHeaders.indexOf(term.toLowerCase());
-      if (idx !== -1) return availableHeaders[idx];
-    }
-
-    const contains = availableHeaders.find(h => 
-      searchTerms.some(term => h.toLowerCase().includes(term.toLowerCase()))
-    );
-    if (contains) return contains;
-
-    return availableHeaders.find(h => {
-      const normalized = h.toLowerCase().replace(/[^a-z0-9]/g, '');
-      return searchTerms.some(term => {
-        const termNorm = term.toLowerCase().replace(/[^a-z0-9]/g, '');
-        return normalized.includes(termNorm) || termNorm.includes(normalized);
-      });
-    });
-  }, []);
-
-  const autoDetectMapping = useCallback((availableHeaders: string[]) => {
-    const mapping = { ...(config.mapping || DEFAULT_MAPPING) };
-    
-    const aliases = {
-      sku: ['sku', 'item', 'part', 'article', 'model', 'product', 'code'],
-      batchNo: ['batch', 'lot', 'serial', 'batch no', 'batch number', 'batch id', 'lot no', 'lot id'],
-      ringStatus: ['status', 'result', 'outcome', 'quality'],
-      uid: ['uid', 'id', 'barcode', 'serial'],
-      inward: ['inward', 'qty', 'count', 'total'],
-      reason: ['reason', 'rejection', 'defect', 'cause', 'fault'],
-      movedToInventory: ['moved to inventory', 'inventory', 'moved'],
-      inventoryDate: ['inventory date', 'moved date', 'date moved'],
-      inventoryBatch: ['inventory batch', 'batch moved', 'batch inventory'],
-      csDate: ['cs date'],
-      csRejection: ['cs rejection'],
-      csBatch: ['cs batch'],
-    };
-
-    // 1. Explicitly look for "DATE" column first (case-insensitive)
-    const dateHeader = availableHeaders.find(h => h.trim().toUpperCase() === 'DATE');
-    if (dateHeader) {
-      mapping.date = dateHeader;
-    } else {
-      // Fallback only if "DATE" is not found, using a very restricted set of aliases
-      const fallbackDate = findHeaderMatch(availableHeaders, ['date', 'timestamp', 'day']);
-      if (fallbackDate) mapping.date = fallbackDate;
-    }
-
-    (Object.entries(aliases) as [keyof typeof aliases, string[]][]).forEach(([key, terms]) => {
-      const currentVal = mapping[key as keyof typeof mapping];
-      if (!currentVal || !availableHeaders.includes(currentVal)) {
-        const detected = findHeaderMatch(availableHeaders, terms);
-        if (detected) {
-          (mapping as any)[key] = detected;
-        } else {
-          (mapping as any)[key] = '';
-        }
-      }
-    });
-
-    return mapping;
-  }, [config.mapping, findHeaderMatch]);
 
   const processSheetData = useCallback(async (rawData: DashboardRow[], sheetHeaders: string[], silent: boolean) => {
     const sheetName = config.sheetName;
@@ -467,10 +454,12 @@ const App: React.FC = () => {
     setDbAuthLoading(true);
     try {
       const token = await authenticate(password);
-      const newConfig = { ...config, dbAuthToken: token };
+      const newConfig = { ...config, dataSource: 'database', dbAuthToken: token };
       setConfig(newConfig);
       safeLocalStorageSet('qc_dashboard_config', JSON.stringify(newConfig));
       setShowDbAuthModal(false);
+      setError(null);
+      setSyncMessage('syncing', 'Fetching from database...');
       return token;
     } catch (err: any) {
       throw err;
@@ -479,12 +468,36 @@ const App: React.FC = () => {
     }
   }, [config, safeLocalStorageSet]);
 
+  const preloadOtherSheet = useCallback(async () => {
+    const otherSheetName = config.sheetName === 'RT CONVERSION' ? 'WABI SABI' : 'RT CONVERSION';
+    if (!config.dbAuthToken || config.dataSource !== 'database') return;
+    if (sheetCacheRef.current[otherSheetName]) return;
+    try {
+      const result = await fetchFromDatabase(config.dbAuthToken, otherSheetName);
+      const parsedData = result.data.map((row: DashboardRow) => ({
+        ...row,
+        date: parseDate(String(row[DEFAULT_MAPPING.date] || '')),
+        _parsedDate: parseDate(String(row[DEFAULT_MAPPING.date] || '')),
+        _inventoryDate: parseDate(String(row[DEFAULT_MAPPING.inventoryDate] || '')),
+        _csDate: parseDate(String(row[DEFAULT_MAPPING.csDate] || ''))
+      }));
+      sheetCacheRef.current[otherSheetName] = {
+        data: parsedData,
+        headers: result.headers,
+        lastSyncTime: new Date()
+      };
+      try {
+        localStorage.setItem(`qc_dashboard_sheet_cache_${otherSheetName}`, JSON.stringify(sheetCacheRef.current[otherSheetName]));
+      } catch (e) {}
+    } catch (e) {}
+  }, [config.dbAuthToken, config.dataSource, config.sheetName]);
+
   const loadData = useCallback(async (silent = false) => {
     if (silent && (loading || isBackgroundSyncing)) return;
 
     if (config.dataSource === 'database') {
       if (!config.dbAuthToken) {
-        if (!silent) setShowDbAuthModal(true);
+        if (!silent) setError('Database not connected. Open Settings to configure a database connection or switch to Google Sheet mode.');
         return;
       }
 
@@ -500,6 +513,7 @@ const App: React.FC = () => {
           try {
             const result = await fetchFromDatabase(config.dbAuthToken, config.sheetName);
             await processSheetData(result.data, result.headers, silent);
+            preloadOtherSheet();
 
             if (config.url) {
               triggerSync(config.dbAuthToken, config.url, config.sheetName)
@@ -508,7 +522,13 @@ const App: React.FC = () => {
             }
             return;
           } catch (dbErr) {
-            if (!config.url) throw dbErr;
+            if (!config.url) {
+              if (!silent) {
+                setError('No data synced yet. Configure a Google Sheet URL in Settings and sync data to get started.');
+                setSyncMessage('error', 'No data in database');
+              }
+              return;
+            }
             console.warn('DB fetch failed, syncing sheet now:', (dbErr as Error).message);
           }
         }
@@ -517,13 +537,15 @@ const App: React.FC = () => {
           try {
             const syncResult = await triggerSync(config.dbAuthToken, config.url, config.sheetName);
             await processSheetData(syncResult.data, syncResult.headers, silent);
+            preloadOtherSheet();
             return;
           } catch (syncErr) {
             console.warn('DB sync failed, falling back to direct fetch:', syncErr.message);
           }
+          const result = await fetchFromDatabase(config.dbAuthToken, config.sheetName);
+          await processSheetData(result.data, result.headers, silent);
+          preloadOtherSheet();
         }
-        const result = await fetchFromDatabase(config.dbAuthToken, config.sheetName);
-        await processSheetData(result.data, result.headers, silent);
       } catch (err: any) {
         if (!silent) {
           const isNetworkError = err.message === 'Failed to fetch' || err.message.includes('NetworkError');
@@ -576,7 +598,7 @@ const App: React.FC = () => {
       if (!silent) setLoading(false);
       else setIsBackgroundSyncing(false);
     }
-  }, [config.url, config.sheetName, config.dataSource, config.dbAuthToken, processSheetData, loading, isBackgroundSyncing]);
+  }, [config.url, config.sheetName, config.dataSource, config.dbAuthToken, processSheetData, loading, isBackgroundSyncing, preloadOtherSheet]);
 
   const lastDateMapping = useRef(config.mapping?.date);
   const lastInventoryDateMapping = useRef(config.mapping?.inventoryDate);
@@ -627,6 +649,8 @@ const App: React.FC = () => {
 
       if (data.length > 0 && !isConfigChange && !isTokenChange) {
         loadData(true);
+      } else if (isConfigChange && sheetCacheRef.current[config.sheetName]) {
+        loadData(true);
       } else {
         loadData(false);
       }
@@ -666,6 +690,20 @@ const App: React.FC = () => {
     }, 3 * 1000);
     return () => clearInterval(interval);
   }, [config.url, config.sheetName, config.dataSource, loadData, loading, isBackgroundSyncing]);
+
+  // Keyboard shortcut: S to toggle between RT CONVERSION and WABI SABI
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 's' || e.key === 'S') {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        e.preventDefault();
+        const next = config.sheetName === 'RT CONVERSION' ? 'WABI SABI' : 'RT CONVERSION';
+        handleSheetSwitch(next);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [config.sheetName, handleSheetSwitch]);
 
   const allUniqueBatches = useMemo(() => {
     const batchCol = config.mapping?.batchNo;
@@ -857,11 +895,131 @@ const App: React.FC = () => {
       csRejection += qty;
     });
 
-    const wip = Math.max(0, inwardCount - total);
     const yieldVal = total > 0 ? (accepted / total) * 100 : 0;
+
+    let wip: number;
+    let wipSerials: string[];
+
+    // Compute WIP serials for all sheets (set-based)
+    {
+      const inwardSet = new Set<string>();
+      const completedSet = new Set<string>();
+
+      data.forEach(r => {
+        const inv = String(r[mapping.inward] || '').trim();
+        if (inv) inwardSet.add(inv);
+
+        const uid = String(r[mapping.uid] || '').trim();
+        const status = String(r[mapping.ringStatus] || '').trim().toLowerCase();
+        if (['rejected', 'nok', 'fail', '0', 'false', 'no'].includes(status) && uid) {
+          completedSet.add(uid);
+        }
+
+        const movedVal = String(r[mapping.movedToInventory] || '').trim();
+        if (movedVal) completedSet.add(movedVal);
+
+        const csVal = String(r[mapping.csRejection] || '').trim();
+        if (csVal) completedSet.add(csVal);
+      });
+
+      wipSerials = [...inwardSet].filter(s => !completedSet.has(s));
+    }
+
+    if (config.sheetName === 'RT CONVERSION') {
+      wip = wipSerials.length;
+    } else {
+      // Quantity-based WIP for other sheets (e.g. WABI SABI)
+      wip = Math.max(0, inwardCount - total);
+    }
     
-    return { total, accepted, rejected, wip, yield: yieldVal, movedToInventory, csRejection };
+    return { total, accepted, rejected, wip, yield: yieldVal, movedToInventory, csRejection, wipSerials };
   }, [filteredData, config, data, dateRange, selectedBatches, debouncedUidSearch, headers, allUniqueBatches]);
+
+  const movedRows = useMemo(() => {
+    const mapping = config.mapping || DEFAULT_MAPPING;
+    const parsedStartDate = dateRange.start ? new Date(dateRange.start) : null;
+    if (parsedStartDate) parsedStartDate.setHours(0, 0, 0, 0);
+    const parsedEndDate = dateRange.end ? new Date(dateRange.end) : null;
+    if (parsedEndDate) parsedEndDate.setHours(0, 0, 0, 0);
+    const inventoryBatchCol = mapping.inventoryBatch;
+    const hasInventoryBatchFilter = inventoryBatchCol && headers.includes(inventoryBatchCol) && selectedBatches.length > 0 && selectedBatches.length < allUniqueBatches.length;
+    const searchTerm = String(debouncedUidSearch || '').trim().toLowerCase();
+    const uidCol = mapping.uid;
+
+    return data.filter(r => {
+      const movedVal = String(r[mapping.movedToInventory] || '').trim();
+      if (movedVal === '') return false;
+
+      if (parsedStartDate || parsedEndDate) {
+        const rowInventoryDate = r._inventoryDate instanceof Date ? r._inventoryDate : (r._inventoryDate ? new Date(r._inventoryDate) : null);
+        if (!rowInventoryDate || isNaN(rowInventoryDate.getTime())) return false;
+        const rowTime = new Date(rowInventoryDate.getTime());
+        rowTime.setHours(0, 0, 0, 0);
+        const isAfterStart = !parsedStartDate || rowTime.getTime() >= parsedStartDate.getTime();
+        const isBeforeEnd = !parsedEndDate || rowTime.getTime() <= parsedEndDate.getTime();
+        if (!isAfterStart || !isBeforeEnd) return false;
+      }
+
+      if (hasInventoryBatchFilter) {
+        const rowBatch = String(r[inventoryBatchCol] || '').trim();
+        if (!selectedBatches.includes(rowBatch)) return false;
+      }
+
+      const uidString = String(r.uid || r.UID || r.Id || r[uidCol] || '');
+      const matchesSearch = !searchTerm || uidString.toLowerCase().includes(searchTerm);
+      if (!matchesSearch) return false;
+
+      return true;
+    });
+  }, [data, config.mapping, dateRange, selectedBatches, allUniqueBatches, headers, debouncedUidSearch]);
+
+  const csRows = useMemo(() => {
+    const mapping = config.mapping || DEFAULT_MAPPING;
+    const parsedStartDate = dateRange.start ? new Date(dateRange.start) : null;
+    if (parsedStartDate) parsedStartDate.setHours(0, 0, 0, 0);
+    const parsedEndDate = dateRange.end ? new Date(dateRange.end) : null;
+    if (parsedEndDate) parsedEndDate.setHours(0, 0, 0, 0);
+    const csBatchCol = mapping.csBatch;
+    const hasCsBatchFilter = csBatchCol && headers.includes(csBatchCol) && selectedBatches.length > 0 && selectedBatches.length < allUniqueBatches.length;
+    const searchTerm = String(debouncedUidSearch || '').trim().toLowerCase();
+    const uidCol = mapping.uid;
+
+    return data.filter(r => {
+      const csVal = String(r[mapping.csRejection] || '').trim();
+      if (csVal === '') return false;
+
+      if (parsedStartDate || parsedEndDate) {
+        const rowCsDate = r._csDate instanceof Date ? r._csDate : (r._csDate ? new Date(r._csDate) : null);
+        if (!rowCsDate || isNaN(rowCsDate.getTime())) return false;
+        const rowTime = new Date(rowCsDate.getTime());
+        rowTime.setHours(0, 0, 0, 0);
+        const isAfterStart = !parsedStartDate || rowTime.getTime() >= parsedStartDate.getTime();
+        const isBeforeEnd = !parsedEndDate || rowTime.getTime() <= parsedEndDate.getTime();
+        if (!isAfterStart || !isBeforeEnd) return false;
+      }
+
+      if (hasCsBatchFilter) {
+        const rowBatch = String(r[csBatchCol] || '').trim();
+        if (!selectedBatches.includes(rowBatch)) return false;
+      }
+
+      const uidString = String(r.uid || r.UID || r.Id || r[uidCol] || '');
+      const matchesSearch = !searchTerm || uidString.toLowerCase().includes(searchTerm);
+      if (!matchesSearch) return false;
+
+      return true;
+    });
+  }, [data, config.mapping, dateRange, selectedBatches, allUniqueBatches, headers, debouncedUidSearch]);
+
+  const filteredWipSerials = useMemo(() => {
+    const mapping = config.mapping || DEFAULT_MAPPING;
+    const inwardSet = new Set<string>();
+    filteredData.forEach(r => {
+      const inward = String(r[mapping.inward] || '').trim();
+      if (inward) inwardSet.add(inward);
+    });
+    return stats.wipSerials.filter(s => inwardSet.has(s));
+  }, [filteredData, stats.wipSerials, config.mapping]);
 
   const skuDetails = useMemo(() => {
     const mapping = config.mapping || DEFAULT_MAPPING;
@@ -988,6 +1146,79 @@ ${rejectedDetailsStr || 'None'}
   const handleCloseAccepted = useCallback(() => setIsAcceptedModalOpen(false), []);
   const handleOpenWip = useCallback(() => setIsWipModalOpen(true), []);
   const handleCloseWip = useCallback(() => setIsWipModalOpen(false), []);
+  const handleOpenMoved = useCallback(() => setIsMovedModalOpen(true), []);
+  const handleCloseMoved = useCallback(() => setIsMovedModalOpen(false), []);
+  const handleOpenCs = useCallback(() => setIsCsModalOpen(true), []);
+  const handleCloseCs = useCallback(() => setIsCsModalOpen(false), []);
+
+  const handleAppAuth = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (appAuthPassword === '0369') {
+      sessionStorage.setItem('qc_dashboard_authenticated', 'true');
+      setIsAppAuthenticated(true);
+      setShowAppAuth(false);
+      setAppAuthPassword('');
+      setAppAuthError(null);
+    } else {
+      setAppAuthError('Invalid password');
+    }
+  }, [appAuthPassword]);
+
+  if (!isAppAuthenticated) {
+    return (
+      <div className="min-h-screen w-full max-w-[100vw] bg-[#0f1117] flex items-center justify-center">
+        <div className="relative bg-[#161a23] border border-white/5 rounded-2xl shadow-2xl max-w-md w-full mx-4 p-8">
+          <div className="flex items-center gap-4 mb-6">
+            <div className="w-12 h-12 bg-[#38bdf8]/10 rounded-xl flex items-center justify-center">
+              <KeyRound className="w-6 h-6 text-[#38bdf8]" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-white uppercase tracking-widest">Dashboard Access</h2>
+              <p className="text-xs text-[#9ca3af] font-medium mt-1">Enter password to continue</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleAppAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-[#e5e7eb] mb-2">Password</label>
+              <div className="relative">
+                <input
+                  type={showAppAuthPassword ? 'text' : 'password'}
+                  className="w-full px-4 py-3 pr-12 bg-[#0f1117] border border-white/10 rounded-xl focus:ring-2 focus:ring-[#38bdf8]/50 outline-none text-sm text-white placeholder:text-[#9ca3af]/50"
+                  placeholder="Enter dashboard password"
+                  value={appAuthPassword}
+                  onChange={(e) => { setAppAuthPassword(e.target.value); setAppAuthError(null); }}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAppAuthPassword(!showAppAuthPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#9ca3af] hover:text-white"
+                >
+                  {showAppAuthPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {appAuthError && (
+              <div className="p-3 bg-[#ef4444]/10 border border-[#ef4444]/30 rounded-xl flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-[#ef4444] shrink-0 mt-0.5" />
+                <p className="text-sm text-[#ef4444] font-medium">{appAuthError}</p>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!appAuthPassword}
+              className="w-full py-3.5 bg-[#38bdf8] hover:bg-[#0ea5e9] disabled:bg-[#38bdf8]/50 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
+            >
+              <KeyRound className="w-4 h-4" /> Unlock Dashboard
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-12 w-full max-w-[100vw] bg-[#0f1117]">
@@ -1159,6 +1390,8 @@ ${rejectedDetailsStr || 'None'}
               onRejectedClick={handleOpenRejection} 
               onAcceptedClick={handleOpenAccepted}
               onWipClick={handleOpenWip}
+              onMovedClick={handleOpenMoved}
+              onCsClick={handleOpenCs}
               filteredData={filteredData}
               mapping={config.mapping || DEFAULT_MAPPING}
             />
@@ -1225,69 +1458,6 @@ ${rejectedDetailsStr || 'None'}
         </div>
       )}
 
-      {showSettingsAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-[#0f1117]/80 backdrop-blur-sm" onClick={() => setShowSettingsAuthModal(false)} />
-          <div className="relative bg-[#161a23] border border-white/5 rounded-2xl shadow-2xl max-w-md w-full mx-4 p-8">
-            <button onClick={() => setShowSettingsAuthModal(false)} className="absolute top-4 right-4 p-2 hover:bg-white/5 rounded-full text-[#9ca3af] hover:text-white">
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-12 h-12 bg-[#38bdf8]/10 rounded-xl flex items-center justify-center">
-                <KeyRound className="w-6 h-6 text-[#38bdf8]" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-white uppercase tracking-widest">Settings Access</h2>
-                <p className="text-xs text-[#9ca3af] font-medium mt-1">Enter password to open dashboard settings</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSettingsAuth} className="space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-[#e5e7eb] mb-2">Password</label>
-                <div className="relative">
-                  <input
-                    type={showSettingsPassword ? 'text' : 'password'}
-                    className="w-full px-4 py-3 pr-12 bg-[#0f1117] border border-white/10 rounded-xl focus:ring-2 focus:ring-[#38bdf8]/50 outline-none text-sm text-white placeholder:text-[#9ca3af]/50"
-                    placeholder="Enter settings password"
-                    value={settingsPassword}
-                    onChange={(e) => { setSettingsPassword(e.target.value); setSettingsAuthError(null); }}
-                    autoFocus
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowSettingsPassword(!showSettingsPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#9ca3af] hover:text-white"
-                  >
-                    {showSettingsPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {settingsAuthError && (
-                <div className="p-3 bg-[#ef4444]/10 border border-[#ef4444]/30 rounded-xl flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-[#ef4444] shrink-0 mt-0.5" />
-                  <p className="text-sm text-[#ef4444] font-medium">{settingsAuthError}</p>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={settingsAuthLoading || !settingsPassword}
-                className="w-full py-3.5 bg-[#38bdf8] hover:bg-[#0ea5e9] disabled:bg-[#38bdf8]/50 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
-              >
-                {settingsAuthLoading ? (
-                  <><Loader className="w-4 h-4 animate-spin" /> Verifying...</>
-                ) : (
-                  <><KeyRound className="w-4 h-4" /> Open Settings</>
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
       <MemoizedSettingsMenu config={{...config, mapping: config.mapping || DEFAULT_MAPPING}} headers={headers} onUpdate={handleConfigUpdate} isOpen={isSettingsOpen} setIsOpen={setIsSettingsOpen} isRefreshing={loading} onDbAuthRequest={() => setShowDbAuthModal(true)} />
       
       <MemoizedDatabaseAuthModal isOpen={showDbAuthModal} onClose={() => setShowDbAuthModal(false)} onAuthenticate={handleDbAuth} />
@@ -1309,9 +1479,28 @@ ${rejectedDetailsStr || 'None'}
       <MemoizedWipDrilldownModal 
         isOpen={isWipModalOpen}
         onClose={handleCloseWip}
-        data={filteredData}
-        headers={headers}
+        wipSerials={filteredWipSerials}
+      />
+
+      <MemoizedSerialListModal
+        isOpen={isMovedModalOpen}
+        onClose={handleCloseMoved}
+        title="MOVED TO INVENTORY"
+        data={movedRows}
         mapping={config.mapping || DEFAULT_MAPPING}
+        accentColor="purple"
+        totalLabel="Total Moved"
+      />
+
+      <MemoizedSerialListModal
+        isOpen={isCsModalOpen}
+        onClose={handleCloseCs}
+        title="CS REJECTION"
+        data={csRows}
+        mapping={config.mapping || DEFAULT_MAPPING}
+        accentColor="orange"
+        totalLabel="Total CS Rejections"
+        reasonField="csReason"
       />
     </div>
   );
