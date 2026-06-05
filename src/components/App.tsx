@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
-import { Menu, AlertCircle, RefreshCw, Database, Copy, Check, Layout, Server, KeyRound, Eye, EyeOff, Loader, X } from 'lucide-react';
-import { INITIAL_CONFIG, DEFAULT_MAPPING, DEFAULT_SHEET_URL } from '../constants';
+import { Menu, AlertCircle, RefreshCw, Database, Copy, Check, Layout, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { INITIAL_CONFIG, DEFAULT_MAPPING } from '../constants';
 import { SheetConfig, DashboardRow, KPIStats, SKUDetail } from '../types';
 import { fetchSheetData, parseDate } from '../services/sheetService';
 import { authenticate, fetchFromDatabase, triggerSync } from '../services/dbService';
@@ -119,14 +119,13 @@ const App: React.FC = () => {
   const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'syncing' | null; message: string | null }>({ type: null, message: null });
   const [showDbAuthModal, setShowDbAuthModal] = useState(false);
   const [dbAuthLoading, setDbAuthLoading] = useState(false);
-  const [showSettingsAuthModal, setShowSettingsAuthModal] = useState(false);
-  const [settingsPassword, setSettingsPassword] = useState('');
-  const [showSettingsPassword, setShowSettingsPassword] = useState(false);
-  const [settingsAuthLoading, setSettingsAuthLoading] = useState(false);
-  const [settingsAuthError, setSettingsAuthError] = useState<string | null>(null);
-  const [isSettingsUnlocked, setIsSettingsUnlocked] = useState(() => {
-    return sessionStorage.getItem('qc_dashboard_settings_unlocked') === 'true';
+  const [isAppAuthenticated, setIsAppAuthenticated] = useState(() => {
+    return sessionStorage.getItem('qc_dashboard_authenticated') === 'true';
   });
+  const [showAppAuth, setShowAppAuth] = useState(false);
+  const [appAuthPassword, setAppAuthPassword] = useState('');
+  const [showAppAuthPassword, setShowAppAuthPassword] = useState(false);
+  const [appAuthError, setAppAuthError] = useState<string | null>(null);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const latestDataRef = useRef<DashboardRow[] | null>(null);
   const latestHeadersRef = useRef<string[] | null>(null);
@@ -321,32 +320,8 @@ const App: React.FC = () => {
   }, [syncLatestData, safeLocalStorageSet]);
 
   const requestSettingsOpen = useCallback(() => {
-    if (isSettingsUnlocked) {
-      setIsSettingsOpen(true);
-      return;
-    }
-    setSettingsAuthError(null);
-    setSettingsPassword('');
-    setShowSettingsAuthModal(true);
-  }, [isSettingsUnlocked]);
-
-  const handleSettingsAuth = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSettingsAuthError(null);
-    setSettingsAuthLoading(true);
-    try {
-      await authenticate(settingsPassword);
-      sessionStorage.setItem('qc_dashboard_settings_unlocked', 'true');
-      setIsSettingsUnlocked(true);
-      setShowSettingsAuthModal(false);
-      setIsSettingsOpen(true);
-      setSettingsPassword('');
-    } catch (err: any) {
-      setSettingsAuthError(err.message || 'Invalid password');
-    } finally {
-      setSettingsAuthLoading(false);
-    }
-  }, [settingsPassword]);
+    setIsSettingsOpen(true);
+  }, []);
 
   // Use a second ref for copy toast timer
   const copyToastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -522,7 +497,7 @@ const App: React.FC = () => {
 
     if (config.dataSource === 'database') {
       if (!config.dbAuthToken) {
-        if (!silent) setShowDbAuthModal(true);
+        if (!silent) setError('Database not connected. Open Settings to configure a database connection or switch to Google Sheet mode.');
         return;
       }
 
@@ -1176,6 +1151,75 @@ ${rejectedDetailsStr || 'None'}
   const handleOpenCs = useCallback(() => setIsCsModalOpen(true), []);
   const handleCloseCs = useCallback(() => setIsCsModalOpen(false), []);
 
+  const handleAppAuth = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    if (appAuthPassword === '0369') {
+      sessionStorage.setItem('qc_dashboard_authenticated', 'true');
+      setIsAppAuthenticated(true);
+      setShowAppAuth(false);
+      setAppAuthPassword('');
+      setAppAuthError(null);
+    } else {
+      setAppAuthError('Invalid password');
+    }
+  }, [appAuthPassword]);
+
+  if (!isAppAuthenticated) {
+    return (
+      <div className="min-h-screen w-full max-w-[100vw] bg-[#0f1117] flex items-center justify-center">
+        <div className="relative bg-[#161a23] border border-white/5 rounded-2xl shadow-2xl max-w-md w-full mx-4 p-8">
+          <div className="flex items-center gap-4 mb-6">
+            <div className="w-12 h-12 bg-[#38bdf8]/10 rounded-xl flex items-center justify-center">
+              <KeyRound className="w-6 h-6 text-[#38bdf8]" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-white uppercase tracking-widest">Dashboard Access</h2>
+              <p className="text-xs text-[#9ca3af] font-medium mt-1">Enter password to continue</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleAppAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-[#e5e7eb] mb-2">Password</label>
+              <div className="relative">
+                <input
+                  type={showAppAuthPassword ? 'text' : 'password'}
+                  className="w-full px-4 py-3 pr-12 bg-[#0f1117] border border-white/10 rounded-xl focus:ring-2 focus:ring-[#38bdf8]/50 outline-none text-sm text-white placeholder:text-[#9ca3af]/50"
+                  placeholder="Enter dashboard password"
+                  value={appAuthPassword}
+                  onChange={(e) => { setAppAuthPassword(e.target.value); setAppAuthError(null); }}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAppAuthPassword(!showAppAuthPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#9ca3af] hover:text-white"
+                >
+                  {showAppAuthPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {appAuthError && (
+              <div className="p-3 bg-[#ef4444]/10 border border-[#ef4444]/30 rounded-xl flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-[#ef4444] shrink-0 mt-0.5" />
+                <p className="text-sm text-[#ef4444] font-medium">{appAuthError}</p>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!appAuthPassword}
+              className="w-full py-3.5 bg-[#38bdf8] hover:bg-[#0ea5e9] disabled:bg-[#38bdf8]/50 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
+            >
+              <KeyRound className="w-4 h-4" /> Unlock Dashboard
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen pb-12 w-full max-w-[100vw] bg-[#0f1117]">
         <header className="sticky top-0 z-40 bg-[#161a23]/90 backdrop-blur-xl border-b border-white/5 shadow-2xl w-full">
@@ -1410,69 +1454,6 @@ ${rejectedDetailsStr || 'None'}
           <div className="px-8 py-4 bg-[#161a23] border border-[#22c55e]/30 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-xl">
             <Check className="w-5 h-5 text-[#22c55e]" />
             <span className="text-sm font-bold text-white uppercase tracking-widest">Report Copied to Clipboard</span>
-          </div>
-        </div>
-      )}
-
-      {showSettingsAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-[#0f1117]/80 backdrop-blur-sm" onClick={() => setShowSettingsAuthModal(false)} />
-          <div className="relative bg-[#161a23] border border-white/5 rounded-2xl shadow-2xl max-w-md w-full mx-4 p-8">
-            <button onClick={() => setShowSettingsAuthModal(false)} className="absolute top-4 right-4 p-2 hover:bg-white/5 rounded-full text-[#9ca3af] hover:text-white">
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-12 h-12 bg-[#38bdf8]/10 rounded-xl flex items-center justify-center">
-                <KeyRound className="w-6 h-6 text-[#38bdf8]" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-white uppercase tracking-widest">Settings Access</h2>
-                <p className="text-xs text-[#9ca3af] font-medium mt-1">Enter password to open dashboard settings</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSettingsAuth} className="space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-[#e5e7eb] mb-2">Password</label>
-                <div className="relative">
-                  <input
-                    type={showSettingsPassword ? 'text' : 'password'}
-                    className="w-full px-4 py-3 pr-12 bg-[#0f1117] border border-white/10 rounded-xl focus:ring-2 focus:ring-[#38bdf8]/50 outline-none text-sm text-white placeholder:text-[#9ca3af]/50"
-                    placeholder="Enter settings password"
-                    value={settingsPassword}
-                    onChange={(e) => { setSettingsPassword(e.target.value); setSettingsAuthError(null); }}
-                    autoFocus
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowSettingsPassword(!showSettingsPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#9ca3af] hover:text-white"
-                  >
-                    {showSettingsPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {settingsAuthError && (
-                <div className="p-3 bg-[#ef4444]/10 border border-[#ef4444]/30 rounded-xl flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-[#ef4444] shrink-0 mt-0.5" />
-                  <p className="text-sm text-[#ef4444] font-medium">{settingsAuthError}</p>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={settingsAuthLoading || !settingsPassword}
-                className="w-full py-3.5 bg-[#38bdf8] hover:bg-[#0ea5e9] disabled:bg-[#38bdf8]/50 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
-              >
-                {settingsAuthLoading ? (
-                  <><Loader className="w-4 h-4 animate-spin" /> Verifying...</>
-                ) : (
-                  <><KeyRound className="w-4 h-4" /> Open Settings</>
-                )}
-              </button>
-            </form>
           </div>
         </div>
       )}

@@ -22,11 +22,11 @@ export const DEFAULT_MAPPING: ColumnMapping = {
 export const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1kId06QCUh6YhxeiX8QuPiimBr02ADwX8KPRp6FLxIcg/edit?gid=575402539#gid=575402539';
 
 export const INITIAL_CONFIG: SheetConfig = {
-  url: DEFAULT_SHEET_URL,
+  url: '',
   sheetName: 'RT CONVERSION',
   range: 'A1:Z1000',
   mapping: { ...DEFAULT_MAPPING },
-  dataSource: 'database',
+  dataSource: 'sheet',
   dbAuthToken: undefined
 };
 
